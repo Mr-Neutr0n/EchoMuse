@@ -2491,6 +2491,12 @@ const _ALEXA_PKGS = [
 // without a live handle.
 const CONNECT_STEPS = new Set([0, 1, 6]);
 
+// Steps that carry operator-fixable input: a file picker or a field. These get
+// different recovery copy ("Fix the input above") than a step that only needs
+// a retry. Zero-indexed against _WIZARD_STEPS; keep them in sync if a step is
+// ever inserted.
+const INPUT_STEPS = new Set([3, 10, 11]);
+
 // Which mode each step has to run in.
 //
 // This matters because the Dot's only power source is the same micro-USB port
@@ -3412,43 +3418,43 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
     let boot = false, lastNote = -1, lastProbe = '', announced = false;
     setWaiting(true);
     try {
-    while (Date.now() - started < TIMEOUT_MS) {
-      if (!boot) boot = (await c.shell('getprop sys.boot_completed')).trim() === '1';
-      if (boot) {
-        // The package manager is the thing we actually need; ask it. It comes
-        // up meaningfully after boot_completed on this hardware, so the flag
-        // is a necessary condition, not the answer.
-        // Deliberately NOT via su: this is a read, it works as the shell
-        // user, and verify_root calls this before root is confirmed.
-        lastProbe = (await c.shell('pm path android 2>&1')).trim();
-        if (lastProbe.startsWith('package:')) {
-          // Only worth a line if there was actually a wait. Every step after
-          // the first re-gates (steps are individually retryable), and three
-          // "Framework ready after 0s" banners per run is noise that trains
-          // people to skim past the one time it matters.
-          if (announced) addLog(`Framework ready after ${Math.round((Date.now() - started) / 1000)}s.`, 'ok');
-          return;
+      while (Date.now() - started < TIMEOUT_MS) {
+        if (!boot) boot = (await c.shell('getprop sys.boot_completed')).trim() === '1';
+        if (boot) {
+          // The package manager is the thing we actually need; ask it. It comes
+          // up meaningfully after boot_completed on this hardware, so the flag
+          // is a necessary condition, not the answer.
+          // Deliberately NOT via su: this is a read, it works as the shell
+          // user, and verify_root calls this before root is confirmed.
+          lastProbe = (await c.shell('pm path android 2>&1')).trim();
+          if (lastProbe.startsWith('package:')) {
+            // Only worth a line if there was actually a wait. Every step after
+            // the first re-gates (steps are individually retryable), and three
+            // "Framework ready after 0s" banners per run is noise that trains
+            // people to skim past the one time it matters.
+            if (announced) addLog(`Framework ready after ${Math.round((Date.now() - started) / 1000)}s.`, 'ok');
+            return;
+          }
         }
+        if (!announced) {
+          announced = true;
+          addLog('Waiting for Android to finish booting — safe to have clicked Reconnect early, this waits as long as it takes…');
+        }
+        // Heartbeat every 15s so a multi-minute wait reads as progress rather
+        // than as a hang (lesson 3 above).
+        const elapsed = Math.floor((Date.now() - started) / 1000);
+        if (elapsed - lastNote >= 15) {
+          lastNote = elapsed;
+          addLog(`  [${elapsed}s] boot_completed=${boot ? '1' : '0'}`
+               + (boot ? `, package manager not answering yet${lastProbe ? ` (${lastProbe.split('\n')[0]})` : ''}` : ', still booting'));
+        }
+        await new Promise(r => setTimeout(r, 2000));
       }
-      if (!announced) {
-        announced = true;
-        addLog('Waiting for Android to finish booting — safe to have clicked Reconnect early, this waits as long as it takes…');
-      }
-      // Heartbeat every 15s so a multi-minute wait reads as progress rather
-      // than as a hang (lesson 3 above).
-      const elapsed = Math.floor((Date.now() - started) / 1000);
-      if (elapsed - lastNote >= 15) {
-        lastNote = elapsed;
-        addLog(`  [${elapsed}s] boot_completed=${boot ? '1' : '0'}`
-             + (boot ? `, package manager not answering yet${lastProbe ? ` (${lastProbe.split('\n')[0]})` : ''}` : ', still booting'));
-      }
-      await new Promise(r => setTimeout(r, 2000));
-    }
-    throw new Error(
-      `Android has not finished booting after 10 minutes, so ${what} cannot run. `
-      + `Every pm command would fail and the step would silently do nothing. `
-      + `This is long past a slow boot — suspect a bootloop rather than patience: `
-      + `check the device's light ring, and click Retry once it settles.`);
+      throw new Error(
+        `Android has not finished booting after 10 minutes, so ${what} cannot run. `
+        + `Every pm command would fail and the step would silently do nothing. `
+        + `This is long past a slow boot — suspect a bootloop rather than patience: `
+        + `check the device's light ring, and click Retry once it settles.`);
     } finally {
       setWaiting(false);
     }
@@ -3513,34 +3519,34 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
     const attemptStart = Date.now();
     setWaiting(true);
     try {
-    for (let i = 0; i < 15; i++) {
-      const callStart = Date.now();
-      // The line below reports the call's duration, but only once it returns —
-      // and a single su call has been observed blocking for 72s against a
-      // magiskd that isn't listening yet. That was 72 seconds of a completely
-      // silent wizard, which is indistinguishable from a hang. Tick while the
-      // call is still in flight, so the wait is visibly a wait.
-      const ticker = setInterval(
-        () => addLog(`    still waiting on su (${Math.round((Date.now() - callStart) / 1000)}s) — magiskd has not answered yet`),
-        15000);
-      try {
-        out = await c.shell('su -c id 2>&1');
-      } finally {
-        clearInterval(ticker);
+      for (let i = 0; i < 15; i++) {
+        const callStart = Date.now();
+        // The line below reports the call's duration, but only once it returns —
+        // and a single su call has been observed blocking for 72s against a
+        // magiskd that isn't listening yet. That was 72 seconds of a completely
+        // silent wizard, which is indistinguishable from a hang. Tick while the
+        // call is still in flight, so the wait is visibly a wait.
+        const ticker = setInterval(
+          () => addLog(`    still waiting on su (${Math.round((Date.now() - callStart) / 1000)}s) — magiskd has not answered yet`),
+          15000);
+        try {
+          out = await c.shell('su -c id 2>&1');
+        } finally {
+          clearInterval(ticker);
+        }
+        const callMs = Date.now() - callStart;
+        // Log every attempt with timing — the previous version of this loop
+        // was silent inside the loop body, so a single su -c id call that's
+        // unexpectedly slow (e.g. blocking on a magiskd socket that isn't
+        // listening yet, rather than failing fast with permission-denied)
+        // was indistinguishable from a true hang. This makes that visible:
+        // if callMs is large, the call itself is slow, not the wizard stuck.
+        addLog(`  attempt ${i + 1}/15 (${(callMs / 1000).toFixed(1)}s): ${out || '(empty)'}`);
+        if (out.includes('uid=0')) { rooted = true; break; }
+        // If a single su call already took a while, don't add the full 2s
+        // sleep on top — just move to the next attempt.
+        if (callMs < 2000) await new Promise(r => setTimeout(r, 2000 - callMs));
       }
-      const callMs = Date.now() - callStart;
-      // Log every attempt with timing — the previous version of this loop
-      // was silent inside the loop body, so a single su -c id call that's
-      // unexpectedly slow (e.g. blocking on a magiskd socket that isn't
-      // listening yet, rather than failing fast with permission-denied)
-      // was indistinguishable from a true hang. This makes that visible:
-      // if callMs is large, the call itself is slow, not the wizard stuck.
-      addLog(`  attempt ${i + 1}/15 (${(callMs / 1000).toFixed(1)}s): ${out || '(empty)'}`);
-      if (out.includes('uid=0')) { rooted = true; break; }
-      // If a single su call already took a while, don't add the full 2s
-      // sleep on top — just move to the next attempt.
-      if (callMs < 2000) await new Promise(r => setTimeout(r, 2000 - callMs));
-    }
     } finally {
       setWaiting(false);
     }
@@ -4421,6 +4427,10 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
   const cur    = _WIZARD_STEPS[step];
   const isDone = step === _WIZARD_STEPS.length - 1 && stepState[step] === 'done';
   const doneCount = stepState.filter(s => s === 'done').length;
+  // +0.35 for a running step is deliberate: it nudges the bar off the
+  // completed count so an in-flight step reads as progress rather than as a
+  // stall, but stays well under a full step so a step that hangs is still an
+  // obvious non-finish. It is a human-chosen fraction, not a derived figure.
   const progressPct = Math.min(100, ((doneCount + (running ? 0.35 : 0)) / _WIZARD_STEPS.length) * 100);
   const upcoming = _WIZARD_STEPS.slice(step + 1, step + 3);
   const stepFailed = !running && stepState[step] === 'error';
@@ -4433,7 +4443,7 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
         ? 'The USB link is up but this step failed — click Retry to run it again.'
         : 'Pick the device from the USB picker, then click Retry.';
     }
-    if ([3, 10, 11].includes(step)) {
+    if (INPUT_STEPS.has(step)) {
       return diagnostics
         ? 'Fix the input above, then retry. If it keeps failing, download diagnostics and attach them to your issue.'
         : 'Fix the input above and retry. Reconnect if the device was unplugged.';
@@ -4629,7 +4639,7 @@ function ProvisionWizard({ token, onClose, knownDevices }) {
             )}
 
             {/* Retry / recovery — one panel so the primary action is obvious */}
-            {stepFailed && ![3, 10, 11].includes(step) && (
+            {stepFailed && !INPUT_STEPS.has(step) && (
               <div className="em-panel em-wizard-recovery">
                 <div className="em-label">This step failed</div>
                 <p className="em-wizard-recovery__hint">{recoveryHint()}</p>
