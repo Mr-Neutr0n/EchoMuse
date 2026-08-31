@@ -2059,6 +2059,15 @@ async def _stream_tts_audio_once(url: str) -> AsyncIterator[bytes]:
                         f"ffmpeg streaming decode failed: {err.decode()[:200]}"
                     )
     finally:
+        # Close stdin before the feeder is cancelled or ffmpeg is killed.
+        # Either path can resolve asyncio's _stdin_closed; doing both logs
+        # InvalidStateError at ERROR on every barge-in cancel (#252).
+        if proc is not None and proc.stdin is not None and not proc.stdin.is_closing():
+            proc.stdin.close()
+            try:
+                await proc.stdin.wait_closed()
+            except Exception:
+                pass
         for t in (feeder, stderr_task):
             if t is not None and not t.done():
                 t.cancel()
